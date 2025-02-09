@@ -29,8 +29,8 @@ CurrSense::CurrSense(int Mot_Num)
     pinA = 39;
     pinB = 36;
     pinC = NOT_SET;  // 如果不直接采集 C 相则设为 NOT_SET
-    gain_a = volts_to_amps_ratio * -1;
-    gain_b = volts_to_amps_ratio * -1;
+    gain_a = volts_to_amps_ratio ;
+    gain_b = volts_to_amps_ratio ;
     gain_c = volts_to_amps_ratio;
   }
   if(Mot_Num == 1)
@@ -38,8 +38,8 @@ CurrSense::CurrSense(int Mot_Num)
     pinA = 35;
     pinB = 34;
     pinC = NOT_SET;  // 同上
-    gain_a = volts_to_amps_ratio * -1;
-    gain_b = volts_to_amps_ratio * -1;
+    gain_a = volts_to_amps_ratio ;
+    gain_b = volts_to_amps_ratio ;
     gain_c = volts_to_amps_ratio;
   }
   // 缓存是否使用 C 相 ADC 采集

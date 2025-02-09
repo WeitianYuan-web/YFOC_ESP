@@ -21,6 +21,7 @@ struct MotorParameters {
     float shaft_angle = 0.0f;            // 机械轴角
     float open_loop_timestamp = 0.0f;    // 开环更新时间戳
     float zero_electric_angle = 0.0f;    // 电机零电角
+    float electrical_angle = 0.0f;        // 电角度
     int direction = -1; // 电机旋转方向系数
     float open_loop_voltage_ratio = 0.7f; // 开环电压比例系数
     float max_openloop_speed = 10.0f; // 最大开环速度（rad/s）
@@ -59,6 +60,7 @@ float _normalizeAngle(float angle);
 void setPwm(float Ua, float Ub, float Uc);
 void setPhaseVoltage(float Uq, float Ud, float angle_el);
 float velocityOpenloop(float target_velocity);
+float computeIq(float Ia, float Ib, float electrical_angle);
 
 // FreeRTOS任务函数声明
 void MotorControlTask(void *pvParameters);
@@ -69,10 +71,10 @@ void SerialReadTask(void *pvParameters);
 // ====================== 新增控制模块结构体 ======================
 struct ControlModule {
   enum Mode { 
-    POSITION = 1,  // 位置模式对应1
-    VELOCITY = 2,  // 速度模式对应2 
-    OPEN_LOOP = 3, // 开环模式对应3
-    CURRENT = 4    // 电流闭环模式对应4
+    POSITION = 1,  // 位置模式
+    VELOCITY = 2,  // 速度模式 
+    OPEN_LOOP = 3, // 开环模式
+    CURRENT = 4    // 电流闭环模式
   } current_mode = POSITION;
   
   // 传感器接口
@@ -82,15 +84,25 @@ struct ControlModule {
     float mech_angle;    // 机械角度（rad）
   } sensor;
   
+  struct {
+    float Ia;
+    float Ib;
+    float Ic;
+    float Iq;
+    float Iq_filtered;
+  } current;
+  
+
   // 控制目标说明
   struct {
-    float position;      // 用于位置模式（rad）
-    float velocity;      // 用于速度模式/开环模式（rad/s）
-    float voltage;       // 保留字段（当前未使用）
-    float current;       // 用于电流闭环模式（目标电流）
+    float position;      // 位置模式目标（rad）
+
+    float velocity;      // 速度模式/开环模式目标（rad/s）
+    float voltage;       // 预留字段
+    float current;       // 电流闭环模式目标（目标Iq）
   } target;
 
-  // PID参数
+  // PID参数：位置控制、速度控制和新增电流闭环控制参数
   struct {
     struct {
       float Kp = 10.0f;
@@ -103,14 +115,33 @@ struct ControlModule {
     struct {
       float Kp = 0.65f;
       float Ki = 0.1f;
-      float Kd = 0.0003f;
+      float Kd = 0.0005f;
       float integral = 0;
       float prev_error = 0;
     } velocity;
+    
+    // 新增电流闭环参数，通常电流闭环使用 PI 控制（可根据需要调整Kp和Ki）
+    struct {
+      float Kp = 5.0f;    // 电流闭环比例增益
+      float Ki = 500.0f;   // 电流闭环积分增益
+      float Kd = 0.0f;    // 通常电流闭环只采用 PI 控制，D 项置0
+      float integral = 0;
+      float prev_error = 0;
+    } current;
   } pid;
+
+  // 其他参数
+  struct {
+    float k_ff = 0.09f;  // 速度前馈增益
+    float alpha = 0.2f;  // 电流低通滤波系数 (0 < alpha < 1, 越小滤波越强)
+  } filter;
+
 };
 
 ControlModule ctrl; // 全局控制模块实例
+
+// 在全局范围新增两个互斥锁
+SemaphoreHandle_t sensorMutex = xSemaphoreCreateRecursiveMutex();  // 传感器数据专用
 
 // ====================== 独立控制算法函数 ======================
 // 位置闭环计算
@@ -157,13 +188,11 @@ float velocityClosedLoop(float target_vel, float dt) {
     float derivative = (error - ctrl.pid.velocity.prev_error) / dt;
     ctrl.pid.velocity.prev_error = error;
     
-    // 定义前馈增益，根据实际情况调节
-    const float k_ff = 0.09f;  // 前馈补偿增益，可以根据实际需要调整
-    
     // 计算前馈补偿：直接利用目标速度生成控制量
-    float feedforward = k_ff * target_vel;
+    float feedforward = ctrl.filter.k_ff * target_vel;
     
     // PID 控制输出 + 前馈补偿
+
     float control_output = ctrl.pid.velocity.Kp * error 
                            + ctrl.pid.velocity.Ki * ctrl.pid.velocity.integral 
                            + ctrl.pid.velocity.Kd * derivative
@@ -181,10 +210,46 @@ float openLoopControl(float target_velocity) {
     return velocityOpenloop(target_velocity); // 调用开环速度函数
 }
 
-// 电流闭环控制函数（预留接口，暂未实现实际功能）
-float currentClosedLoop(float target_current, float dt) {
-    // TODO: 实现电流闭环控制算法
-    return 0.0f;
+// 电流闭环控制函数（使用 PI 控制，并先计算 Iq）
+// 请确保传入 electrical_angle 为当前电机电角（单位：rad）
+float currentClosedLoop(float target_current, float dt, float electrical_angle) {
+    // 计算原始 Iq
+    float measured_Iq = computeIq(ctrl.current.Ia , ctrl.current.Ib, electrical_angle);
+    
+
+    // 对 Iq 进行低通滤波
+    ctrl.current.Iq_filtered = ctrl.filter.alpha * measured_Iq 
+                             + (1 - ctrl.filter.alpha) * ctrl.current.Iq_filtered;
+    
+    // 使用滤波后的 Iq 进行闭环控制
+    float error = target_current - ctrl.current.Iq_filtered;
+
+    ctrl.pid.current.integral += error * dt;
+   
+    ctrl.pid.current.prev_error = error;
+    
+
+    float control_output = ctrl.pid.current.Kp * error + ctrl.pid.current.Ki * ctrl.pid.current.integral;
+    return control_output;
+
+}
+
+// 计算 Iq 的函数，输入参数为 Ia、Ib 和电角度 electrical_angle，返回计算得到的 q 轴电流 Iq
+float computeIq(float Ia, float Ib, float electrical_angle) {
+    // 依据 Clarke 变换，取 Ialpha = Ia
+    float Ialpha = Ia;
+    /*  
+       标准Clarke变换（假设平衡系统，且 Ia + Ib + Ic = 0）：
+         Ibeta = (Ib - Ic) / sqrt(3)
+              = (Ib - (-(Ia+Ib))) / sqrt(3)
+
+              = (Ia + 2*Ib) / sqrt(3)
+    */
+    float Ibeta = (Ia + 2.0f * Ib) / sqrtf(3.0f);
+
+    // 利用 Park 变换计算 q 轴电流
+    float Iq = Ibeta * cos(electrical_angle) - Ialpha * sin(electrical_angle);
+    return Iq;
 }
 
 // 声明全局递归互斥锁
@@ -236,7 +301,6 @@ void setup() {
   // 校准流程
   sensor.Sensor_update();
   motorParams.zero_electric_angle = _electricalAngle(sensor.getMechanicalAngle(), 7);
-  ctrl.target.position = sensor.getMechanicalAngle() ;
   
 
   delay(200);
@@ -359,6 +423,8 @@ void MotorControlTask(void *pvParameters) {
   const TickType_t wait_duration = pdMS_TO_TICKS(500); // 等待稳定阶段
   const TickType_t ramp_duration = pdMS_TO_TICKS(500); // 渐进过渡阶段
   
+  ctrl.current_mode = ControlModule::POSITION;
+  ctrl.target.current = 0.1f;
   // 启动阶段时间记录
   TickType_t startup_start_time = xTaskGetTickCount();
 
@@ -367,78 +433,93 @@ void MotorControlTask(void *pvParameters) {
     float dt = (now_us - last_us) * 1e-6f;
     last_us = now_us;
 
-    // 更新传感器数据
-    xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
+    // 更新传感器数据（使用 sensorMutex）
+    xSemaphoreTakeRecursive(sensorMutex, portMAX_DELAY);
       sensor.Sensor_update();
       ctrl.sensor.position = sensor.getAngle();
       ctrl.sensor.mech_angle = sensor.getMechanicalAngle();
       ctrl.sensor.velocity = sensor.getVelocity();
-    xSemaphoreGiveRecursive(globalMutex);
+    xSemaphoreGiveRecursive(sensorMutex);
 
+  
+      current_sense.getPhaseCurrents();
+      ctrl.current.Ia = current_sense.current_a;
+      ctrl.current.Ib = current_sense.current_b;
+      ctrl.current.Ic = current_sense.current_c;
+   
     // 计算当前电角度（包含零电角偏置，并归一化至 [0, 2π]）
-    float electrical_angle = motorParams.direction * _electricalAngle(ctrl.sensor.mech_angle, 7)
-                             + motorParams.zero_electric_angle;
+    float electrical_angle = motorParams.direction * _electricalAngle(ctrl.sensor.mech_angle, 7) + motorParams.zero_electric_angle;
     electrical_angle = _normalizeAngle(electrical_angle);
-    
+    motorParams.electrical_angle = electrical_angle;
+    ctrl.current.Iq = computeIq(ctrl.current.Ia, ctrl.current.Ib, electrical_angle);
+
+
     // 状态机处理启动阶段逻辑
-    switch(startup_state) {
-      case WAIT_STABLE: {
-          if ((xTaskGetTickCount() - startup_start_time) < wait_duration) {
-              // 等待阶段：输出0电压稳定磁场
-              setPhaseVoltage(0, 0, electrical_angle);
-              vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1));
-              continue;
-          } else {
-              // 等待阶段结束：初始化PID参数和目标位置，并切换到渐进阶段
-          xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
-                  ctrl.target.position = ctrl.sensor.mech_angle;
-            ctrl.pid.position.integral = 0;
-            ctrl.pid.position.prev_error = 0;
-          xSemaphoreGiveRecursive(globalMutex);
-          
-          startup_state = RAMP_UP;
-              startup_start_time = xTaskGetTickCount(); // 重置计时用于渐进阶段
-          }
+    switch (startup_state)
+    {
+    case WAIT_STABLE: {
+        if ((xTaskGetTickCount() - startup_start_time) < wait_duration) {
+            // 等待阶段：输出0电压稳定磁场
+            setPhaseVoltage(0, 0, electrical_angle);
+            vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1));
+            continue;
+        } else {
+            // 等待阶段结束：初始化PID参数和目标位置，并切换到渐进阶段
+        xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
+          ctrl.target.position = ctrl.sensor.mech_angle;
+          ctrl.pid.position.integral = 0;
+          ctrl.pid.position.prev_error = 0;
+          ctrl.pid.velocity.integral = 0;
+          ctrl.pid.velocity.prev_error = 0;
+          ctrl.pid.current.integral = 0;
+          ctrl.pid.current.prev_error = 0;
+        xSemaphoreGiveRecursive(globalMutex);
+
+        
+
+        startup_state = RAMP_UP;
+            startup_start_time = xTaskGetTickCount(); // 重置计时用于渐进阶段
         }
-        break;
-      case RAMP_UP: {
-          TickType_t elapsed = xTaskGetTickCount() - startup_start_time;
-          float ramp_factor = (elapsed < ramp_duration) ? (elapsed / (float)ramp_duration) : 1.0f;
-          
-          // 根据不同模式计算闭环输出
-          float Uq = 0.0f;
-          ControlModule::Mode currentMode = ctrl.current_mode;
-          float target_value = (currentMode == ControlModule::POSITION) ? ctrl.target.position : ctrl.target.velocity;
-          switch(currentMode) {
-            case ControlModule::POSITION:
-              Uq = positionClosedLoop(target_value, dt);
-              break;
-            case ControlModule::VELOCITY:
-              Uq = velocityClosedLoop(target_value, dt);
-              break;
-            case ControlModule::OPEN_LOOP:
-              Uq = openLoopControl(target_value);
-              break;
-            case ControlModule::CURRENT:
-              Uq = currentClosedLoop(ctrl.target.current, dt);
-              break;
-          }
-          
-          // 渐进输出：控制输出与 ramp_factor 相乘，实现从0到正常闭环输出的平滑过渡
-          Uq *= ramp_factor;
-          setPhaseVoltage(Uq, 0, electrical_angle);
-          
-          // 当 ramp_factor 达到1后，切换至正常闭环控制
-          if (ramp_factor >= 1.0f) {
-              startup_state = RUNNING;
-          }
-          vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1));
-          continue;
+      }
+      break;
+    case RAMP_UP: {
+        TickType_t elapsed = xTaskGetTickCount() - startup_start_time;
+        float ramp_factor = (elapsed < ramp_duration) ? (elapsed / (float)ramp_duration) : 1.0f;
+        
+        // 根据不同模式计算闭环输出
+        float Uq = 0.0f;
+        ControlModule::Mode currentMode = ctrl.current_mode;
+        float target_value = (currentMode == ControlModule::POSITION) ? ctrl.target.position : ctrl.target.velocity;
+        switch(currentMode) {
+          case ControlModule::POSITION:
+            Uq = positionClosedLoop(target_value, dt);
+            break;
+          case ControlModule::VELOCITY:
+            Uq = velocityClosedLoop(target_value, dt);
+            break;
+          case ControlModule::OPEN_LOOP:
+            Uq = openLoopControl(target_value);
+            break;
+          case ControlModule::CURRENT:
+            Uq = currentClosedLoop(ctrl.target.current, dt, electrical_angle);
+            break;
         }
-        break;
-      case RUNNING:
-        // 正常闭环控制，无需额外处理
-        break;
+        
+        // 渐进输出：控制输出与 ramp_factor 相乘，实现从0到正常闭环输出的平滑过渡
+        Uq *= ramp_factor;
+        setPhaseVoltage(Uq, 0, electrical_angle);
+        
+        // 当 ramp_factor 达到1后，切换至正常闭环控制
+        if (ramp_factor >= 1.0f) {
+            startup_state = RUNNING;
+        }
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1));
+        continue;
+      }
+      break;
+    case RUNNING:
+      // 正常闭环控制，无需额外处理
+      break;
     }
     
     // 正常运行状态下，根据当前模式计算 Uq
@@ -456,7 +537,7 @@ void MotorControlTask(void *pvParameters) {
         Uq = openLoopControl(target_value);
         break;
       case ControlModule::CURRENT:
-        Uq = currentClosedLoop(ctrl.target.current, dt);
+        Uq = currentClosedLoop(ctrl.target.current, dt, electrical_angle);
         break;
     }
     
@@ -470,26 +551,30 @@ void MotorControlTask(void *pvParameters) {
 void DataPrintTask(void *pvParameters) {
   (void) pvParameters;
   for (;;) {
-    float data[VOFA_CH_COUNT];
+    float data[VOFA_CH_COUNT]; // 确保数组大小足够
     
-    xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
-      data[0] = phaseVolt.Ua;                        // 相电压 Ua_out
-      data[1] = phaseVolt.Ub;                        // 相电压 Ub_out
-      data[2] = phaseVolt.Uc;                        // 相电压 Uc_out
-      data[3] = sensor.getVelocity();
+    // 第一部分：电流相关数据
+      data[0] = ctrl.current.Iq;       
+      data[1] = phaseVolt.Ua;          
+      data[2] = phaseVolt.Ub;           
+      data[3] = phaseVolt.Uc;          
 
+    // 第二部分：传感器数据
+    xSemaphoreTakeRecursive(sensorMutex, portMAX_DELAY);
+      data[4] = sensor.getVelocity();               
+      data[5] = sensor.getAngle() * 180.0f / PI;     
+      data[6] = sensor.getMechanicalAngle() * 180.0f / PI; 
+    xSemaphoreGiveRecursive(sensorMutex);
 
-      data[4] = sensor.getAngle() * 180.0f / PI;
-      data[5] = sensor.getMechanicalAngle() * 180.0f / PI;
-      data[6] = ctrl.target.position * 180.0f / PI;
-      data[7] = static_cast<float>(ctrl.current_mode);
-      data[8] = ctrl.target.velocity;
-      data[9] = motorParams.shaft_angle;
-      data[10] = motorParams.open_loop_voltage_ratio;
-    xSemaphoreGiveRecursive(globalMutex);
+    // 第三部分：其他数据（假设后续通道有其他用途）
+    data[7] = ctrl.current_mode;
+    data[8] = ctrl.target.position;
+    data[9] = ctrl.target.velocity;
+    data[10] = ctrl.target.current;
+
 
     vofa(data);  // 发送数据
-    vTaskDelay(pdMS_TO_TICKS(10));  // 每10ms更新一次数据
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
