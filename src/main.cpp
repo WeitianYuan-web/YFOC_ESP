@@ -79,6 +79,7 @@ void MotorControlTask(void *pvParameters);
 void SensorUpdateTask(void *pvParameters);
 void DataPrintTask(void *pvParameters);
 void SerialReadTask(void *pvParameters);
+void UserAppTask(void *pvParameters);
 
 
 // ====================== 修改后的控制模块结构体 ======================
@@ -114,7 +115,6 @@ struct ControlModule {
     float position;      // 位置模式目标（rad）
     float openloop_velocity;      // 开环模式目标（rad/s）
     float velocity;      // 速度模式目标（rad/s）
-    float voltage;       // 预留字段
     float current;       // 电流闭环模式目标（目标Iq）
 
   } target;
@@ -217,6 +217,81 @@ ControlModule ctrl; // 全局控制模块实例
 // 在全局范围新增两个互斥锁
 SemaphoreHandle_t sensorMutex = xSemaphoreCreateRecursiveMutex();  // 传感器数据专用
 
+
+enum ControlMode {
+    POSITION = 1,
+    VELOCITY = 2,
+    OPEN_LOOP = 3,
+    CURRENT = 4,
+    CURRENT_POSITION = 5,
+    CURRENT_VELOCITY = 6,
+    CASCADE_POS_VEL_CUR =7
+};
+
+ControlMode User_control_mode = POSITION; // 全局控制模块实例
+// 统一参数结构体（包含所有可能的参数）
+struct ControlParams {
+    // 目标值
+    float target_pos;  // 位置环目标值，单位：rad
+    float target_vel;  // 速度环目标值，单位：rad/s
+    float target_cur;  // 电流环目标值，单位：A
+    // 限制值
+    float max_current; // 电流环最大电流限制，单位：A
+    float pos_vel_limit; // 位置环速度限制，单位：rad/s
+    
+};
+
+ControlParams User_control_params;
+
+// 核心控制函数
+bool set_control_mode(ControlMode mode, struct ControlParams params) {
+    switch(mode) {
+        case POSITION:  // 纯位置环
+            ctrl.current_mode = ControlModule::POSITION;
+            ctrl.target.position = params.target_pos;
+            break;
+            
+        case VELOCITY:  // 纯速度环
+            ctrl.current_mode = ControlModule::VELOCITY;
+            ctrl.target.velocity = params.target_vel;
+            break;
+            
+        case OPEN_LOOP:  // 开环模式
+            ctrl.current_mode = ControlModule::OPEN_LOOP;
+            ctrl.target.openloop_velocity = params.target_vel;
+            break;
+            
+        case CURRENT:  // 纯电流环
+            ctrl.current_mode = ControlModule::CURRENT;
+            ctrl.target.current = params.target_cur;
+            break;
+            
+        case CURRENT_POSITION:  // 电流+位置双环
+            ctrl.current_mode = ControlModule::CURRENT_POSITION;
+            ctrl.target.position = params.target_pos;
+            ctrl.limits.max_current = params.max_current;
+            break;
+            
+        case CURRENT_VELOCITY:  // 电流+速度双环
+            ctrl.current_mode = ControlModule::CURRENT_VELOCITY;
+            ctrl.target.velocity = params.target_vel;
+            ctrl.limits.max_current = params.max_current;
+            break;
+            
+        case CASCADE_POS_VEL_CUR:  // 三环级联
+            ctrl.current_mode = ControlModule::CASCADE_POS_VEL_CUR;
+            ctrl.target.position = params.target_pos;
+            ctrl.limits.cascade_limits.pos_vel_limit = params.pos_vel_limit;
+            ctrl.limits.max_current = params.max_current;
+            break;
+            
+        default:
+            return false;
+    }
+    return true;
+}
+
+
 // ====================== 独立控制算法函数 ======================
 // 位置闭环计算
 float positionClosedLoop(float target_pos, float dt) {
@@ -310,7 +385,7 @@ float currentClosedLoop(float target_current, float dt, float electrical_angle, 
     
     // 积分抗饱和策略：当输出异常时修正积分项
     if ((!isCurrentValid(control_output)) && (current_error * control_output > 0)) {
-        ctrl.pid.advanced.cascade.cur_integral = 0.99 * ctrl.pid.advanced.cascade.cur_integral;
+        ctrl.pid.advanced.cascade.cur_integral = 0.998f * ctrl.pid.advanced.cascade.cur_integral;
     }
     
 
@@ -472,7 +547,7 @@ float cascadePositionVelocityCurrentLoop(float target_position, float dt) {
     
     // 当前环抗积分饱和：当输出异常时减小积分
     if ((!isCurrentValid(current_output)) && (current_error * current_output > 0)) {
-        ctrl.pid.advanced.cascade.cur_integral = 0.99f * ctrl.pid.advanced.cascade.cur_integral;
+        ctrl.pid.advanced.cascade.cur_integral = 0.998f * ctrl.pid.advanced.cascade.cur_integral;
     }
     
     return current_output;
@@ -539,6 +614,7 @@ void setup() {
   xTaskCreatePinnedToCore(MotorControlTask, "MotorControlTask", 8192, NULL, 2, NULL, 0);
   xTaskCreatePinnedToCore(DataPrintTask, "DataPrintTask", 2048, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(SerialReadTask, "SerialReadTask", 2048, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(UserAppTask, "UserAppTask", 4096, NULL, 1, NULL, 1);
 
 }
 
@@ -693,6 +769,7 @@ void MotorControlTask(void *pvParameters) {
             // 等待阶段结束：初始化PID参数和目标位置，并切换到渐进阶段
         xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
           ctrl.target.position = ctrl.sensor.mech_angle;
+          User_control_params.target_pos = ctrl.sensor.mech_angle;
           ctrl.pid.basic.position.integral = 0;
           ctrl.pid.basic.position.prev_error = 0;
           ctrl.pid.basic.velocity.integral = 0;
@@ -715,16 +792,15 @@ void MotorControlTask(void *pvParameters) {
         // 根据不同模式计算闭环输出
         float Uq = 0.0f;
         ControlModule::Mode currentMode = ctrl.current_mode;
-        float target_value = (currentMode == ControlModule::POSITION) ? ctrl.target.position : ctrl.target.velocity;
         switch(currentMode) {
           case ControlModule::POSITION:
-            Uq = positionClosedLoop(target_value, dt);
+            Uq = positionClosedLoop(ctrl.target.position, dt);
             break;
           case ControlModule::VELOCITY:
-            Uq = velocityClosedLoop(target_value, dt);
+            Uq = velocityClosedLoop(ctrl.target.velocity, dt);
             break;
           case ControlModule::OPEN_LOOP:
-            Uq = openLoopControl(target_value);
+            Uq = openLoopControl(ctrl.target.openloop_velocity);
             break;
           case ControlModule::CURRENT:
             Uq = currentClosedLoop(ctrl.target.current, dt, electrical_angle, ctrl.pid.basic.current.Kp, ctrl.pid.basic.current.Ki);
@@ -766,7 +842,6 @@ void MotorControlTask(void *pvParameters) {
         break;
       case ControlModule::VELOCITY:
         Uq = velocityClosedLoop(ctrl.target.velocity, dt);
-
         break;
       case ControlModule::OPEN_LOOP:
         Uq = openLoopControl(ctrl.target.openloop_velocity);
@@ -810,33 +885,19 @@ void DataPrintTask(void *pvParameters) {
       data[6] = sensor.getMechanicalAngle() * 180.0f / PI; 
     xSemaphoreGiveRecursive(sensorMutex);
 
+    xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
     // 第三部分：其他数据（假设后续通道有其他用途）
     data[7] = ctrl.current_mode;
-    data[8] = ctrl.target.position * 180.0f / PI;
-    data[9] = ctrl.target.velocity;
-    data[10] = ctrl.target.current;
-
+    data[8] = User_control_params.target_pos * 180.0f / PI;
+    data[9] = User_control_params.target_vel;
+    data[10] = User_control_params.target_cur;
+    data[11] = User_control_params.max_current;
+    data[12] = User_control_params.pos_vel_limit;
+    xSemaphoreGiveRecursive(globalMutex);
 
     vofa(data);  // 发送数据
     vTaskDelay(pdMS_TO_TICKS(10));
   }
-}
-
-void setControlMode(ControlModule::Mode new_mode) {
-  // 进入临界区
-  xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
-  // 切换前重置积分项
-  ctrl.pid.basic.position.integral = 0;
-  ctrl.pid.basic.velocity.integral = 0;
-  ctrl.pid.basic.current.integral = 0;
-  ctrl.pid.advanced.position_current.pos_integral = 0;
-  ctrl.pid.advanced.velocity_current.vel_integral = 0;
-  ctrl.pid.advanced.cascade.pos_integral = 0;
-  ctrl.pid.advanced.cascade.vel_integral = 0;
-  ctrl.current_mode = new_mode;
-  xSemaphoreGiveRecursive(globalMutex); // 离开临界区
-
-
 }
 
 
@@ -850,53 +911,29 @@ void SerialReadTask(void *pvParameters) {
       if (inChar == '\n') {
         inputBuffer.trim();
         if (inputBuffer.length() > 0) {
-          // 如果接收到模式命令，则切换模式
+          // 模式切换命令
           if (inputBuffer.startsWith("mode:")) {
-            int mode = inputBuffer.substring(5).toInt();
+            int new_mode = inputBuffer.substring(5).toInt();
             xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
-              if(mode == 1) setControlMode(ControlModule::POSITION);
-              else if(mode == 2) setControlMode(ControlModule::VELOCITY);
-              else if(mode == 3) setControlMode(ControlModule::OPEN_LOOP);
-              else if(mode == 4) setControlMode(ControlModule::CURRENT);
-              else if(mode == 5) setControlMode(ControlModule::CURRENT_POSITION);
-              else if(mode == 6) setControlMode(ControlModule::CURRENT_VELOCITY);
-              else if(mode == 7) setControlMode(ControlModule::CASCADE_POS_VEL_CUR);
+              User_control_mode = static_cast<ControlMode>(new_mode);
             xSemaphoreGiveRecursive(globalMutex);
           }
-          else { // 根据逗号分割数据，更新控制目标
-            int firstDelim = inputBuffer.indexOf(',');
-            int secondDelim = inputBuffer.indexOf(',', firstDelim + 1);
-            int thirdDelim = inputBuffer.indexOf(',', secondDelim + 1);
-            if (firstDelim != -1 && secondDelim != -1 && thirdDelim != -1) {
-                String token1 = inputBuffer.substring(0, firstDelim);
-                String token2 = inputBuffer.substring(firstDelim + 1, secondDelim);
-                String token3 = inputBuffer.substring(secondDelim + 1, thirdDelim);
-                String token4 = inputBuffer.substring(thirdDelim + 1);
-                float val1 = token1.toFloat();
-                float val2 = token2.toFloat();
-                float val3 = token3.toFloat();
-                float val4 = token4.toFloat();
+          // 参数设置命令（格式：pos,vel,cur,limit）
+          else if (inputBuffer.startsWith("param:")) {
+            String paramStr = inputBuffer.substring(6);
+            int delim1 = paramStr.indexOf(',');
+            int delim2 = paramStr.indexOf(',', delim1+1);
+            int delim3 = paramStr.indexOf(',', delim2+1);
+            int delim4 = paramStr.indexOf(',', delim3+1);
 
-                xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
-                  switch(ctrl.current_mode) {
-                    case ControlModule::POSITION:
-                    case ControlModule::CASCADE_POS_VEL_CUR:
-                    case ControlModule::CURRENT_POSITION:
-                      ctrl.target.position = val1;
-                      break;
-                    case ControlModule::VELOCITY:
-                    case ControlModule::CURRENT_VELOCITY:
-                      ctrl.target.velocity = val2;
-                      break;
-                    case ControlModule::OPEN_LOOP:
-                      ctrl.target.openloop_velocity = val3;
-                      break;
-                    case ControlModule::CURRENT:
-                      ctrl.target.current = val4;
-                      break;
-
-                  }
-                xSemaphoreGiveRecursive(globalMutex);
+            if (delim1 != -1 && delim2 != -1 && delim3 != -1 && delim4 != -1) {
+              xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
+                User_control_params.target_pos = paramStr.substring(0, delim1).toFloat();
+                User_control_params.target_vel = paramStr.substring(delim1+1, delim2).toFloat();
+                User_control_params.target_cur = paramStr.substring(delim2+1, delim3).toFloat();
+                User_control_params.max_current = paramStr.substring(delim3+1, delim4).toFloat();
+                User_control_params.pos_vel_limit = paramStr.substring(delim4+1).toFloat();
+              xSemaphoreGiveRecursive(globalMutex);
             }
           }
         }
@@ -905,26 +942,6 @@ void SerialReadTask(void *pvParameters) {
         inputBuffer += inChar;
       }
     }
-    if (inputBuffer.startsWith("MAX_CUR:")) {
-      float max_cur = inputBuffer.substring(7).toFloat();
-      xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
-        ctrl.limits.max_current = max_cur;
-      xSemaphoreGiveRecursive(globalMutex);
-    }
-    if (inputBuffer.startsWith("MIN_CUR:")) {
-      float min_cur = inputBuffer.substring(7).toFloat();
-      xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
-        ctrl.limits.min_current = min_cur;
-      xSemaphoreGiveRecursive(globalMutex);
-    }
-    if (inputBuffer.startsWith("CASCADE_VEL_LIMIT:")) {
-      float vel_limit = inputBuffer.substring(18).toFloat();
-      xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
-        ctrl.limits.cascade_limits.pos_vel_limit = fabs(vel_limit); // 确保为正值
-      xSemaphoreGiveRecursive(globalMutex);
-
-    }
-
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
@@ -948,5 +965,30 @@ bool isCurrentValid(float current) {
   float abs_current = fabs(current);
   return (abs_current >= ctrl.limits.min_current && 
           abs_current <= ctrl.limits.max_current );
+}
+
+// 新增用户自定义任务
+void UserAppTask(void *pvParameters) {
+    (void) pvParameters;
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+    User_control_params.target_vel = 10.0f;
+    User_control_params.target_cur = 0.5f;
+    User_control_params.max_current = 0.9f;
+    for (;;) {
+        // 创建临时参数副本
+        ControlMode current_mode;
+        ControlParams current_params;
+        
+        // 临界区获取最新参数
+        xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
+            current_mode = User_control_mode;
+            current_params = User_control_params; 
+        xSemaphoreGiveRecursive(globalMutex);
+        
+        // 唯一执行设置的地方
+        set_control_mode(current_mode, current_params);
+        
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(10));
+    }
 }
 
