@@ -1,11 +1,16 @@
+#pragma once
+
 #include <Arduino.h> 
 #include "Wire.h"
+
+// 添加Wire1的声明
+extern TwoWire Wire1;
 
 class Sensor_AS5600
 {
   public:
     Sensor_AS5600(int Mot_Num);
-    void Sensor_init(TwoWire* _wire = &Wire);
+    void Sensor_init(TwoWire* _wire = &Wire, uint8_t i2c_addr = 0x36);
     void Sensor_update();
     float getAngle();
     float getVelocity();
@@ -16,6 +21,7 @@ class Sensor_AS5600
     
   private:
     int _Mot_Num;
+    uint8_t i2c_address; // 新增地址存储
     //AS5600 变量定义
     //int sensor_direction=1;       //编码器旋转方向定义
     float angle_prev=0; // 最后一次调用 getSensorAngle() 的输出结果，用于得到完整的圈数和速度

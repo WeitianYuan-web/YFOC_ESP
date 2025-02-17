@@ -13,12 +13,12 @@ double Sensor_AS5600::getSensorAngle() {
   byte readArray[2];
   uint16_t readValue = 0;
 
-  wire->beginTransmission(0x36);
+  wire->beginTransmission(i2c_address);
   wire->write(angle_reg_msb);
   wire->endTransmission(false);
 
 
-  wire->requestFrom(0x36, (size_t)2);
+  wire->requestFrom(i2c_address, (size_t)2);
   for (byte i=0; i < 2; i++) {
     readArray[i] = wire->read();
   }
@@ -43,8 +43,9 @@ Sensor_AS5600::Sensor_AS5600(int Mot_Num) {
    _Mot_Num=Mot_Num;  //使得 Mot_Num 可以统一在该文件调用
    
 }
-void Sensor_AS5600::Sensor_init(TwoWire* _wire) {
-    wire=_wire;
+void Sensor_AS5600::Sensor_init(TwoWire* _wire, uint8_t i2c_addr) {
+    wire = _wire;
+    i2c_address = i2c_addr; // 存储I2C地址
     wire->begin();   //电机Sensor
     delay(50);
     getSensorAngle(); 

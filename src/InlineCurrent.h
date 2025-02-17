@@ -1,3 +1,7 @@
+#pragma once
+
+#define NOT_SET -1
+
 #include <Arduino.h>
 
 #define _ADC_VOLTAGE 3.3f            // ADC 电压
@@ -7,7 +11,8 @@
 class CurrSense
 {
   public:
-    CurrSense(int Mot_Num);
+    CurrSense(int pinA, int pinB, int pinC = NOT_SET, 
+            float shunt_res = 0.01f, float amp_gain = 50.0f);
     inline float readADCVoltageInline(const int pin) {
       uint32_t raw_adc = analogRead(pin);
       return raw_adc * _ADC_CONV;
@@ -23,8 +28,8 @@ class CurrSense
     float offset_ia;
     float offset_ib;
     float offset_ic;
-    const float _shunt_resistor;
-    const float amp_gain;
+    float _shunt_resistor;
+    float amp_gain;
     const float volts_to_amps_ratio;
     
     float gain_a;
@@ -33,5 +38,4 @@ class CurrSense
     
     bool usePhaseC;
   private:
-    int _Mot_Num;
 };

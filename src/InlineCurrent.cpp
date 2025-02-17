@@ -15,35 +15,24 @@
 // ADC 计数到电压转换比率求解
 #define _ADC_CONV ( (_ADC_VOLTAGE) / (_ADC_RESOLUTION) )
 
-#define NOT_SET -12345.0
 #define _isset(a) ( (a) != (NOT_SET) )
 
-CurrSense::CurrSense(int Mot_Num)
-  : _Mot_Num(Mot_Num),
-    _shunt_resistor(0.01f),
-    amp_gain(50.0f),
-    volts_to_amps_ratio( 1.0f / _shunt_resistor / amp_gain)  // 或者 1.0f / _shunt_resistor / amp_gain
+CurrSense::CurrSense(int _pinA, int _pinB, int _pinC, 
+                   float shunt_res, float _amp_gain)
+  : pinA(_pinA),
+    pinB(_pinB),
+    pinC(_pinC),
+    _shunt_resistor(shunt_res),    // 初始化分流电阻
+    amp_gain(_amp_gain),           // 初始化运放增益
+    volts_to_amps_ratio(1.0f / _shunt_resistor / amp_gain)
 {
-  if(Mot_Num == 0)
-  {
-    pinA = 39;
-    pinB = 36;
-    pinC = NOT_SET;  // 如果不直接采集 C 相则设为 NOT_SET
-    gain_a = volts_to_amps_ratio ;
-    gain_b = volts_to_amps_ratio ;
+    // 设置增益系数
+    gain_a = volts_to_amps_ratio;
+    gain_b = volts_to_amps_ratio;
     gain_c = volts_to_amps_ratio;
-  }
-  if(Mot_Num == 1)
-  {
-    pinA = 35;
-    pinB = 34;
-    pinC = NOT_SET;  // 同上
-    gain_a = volts_to_amps_ratio ;
-    gain_b = volts_to_amps_ratio ;
-    gain_c = volts_to_amps_ratio;
-  }
-  // 缓存是否使用 C 相 ADC 采集
-  usePhaseC = _isset(pinC);
+    
+    // 自动判断是否使用C相（当pinC被设置时使用实际采样）
+    usePhaseC = _isset(pinC);
 }
 
 void CurrSense::configureADCInline(const int pinA, const int pinB, const int pinC){
