@@ -114,7 +114,7 @@ float ControlModule::velocityClosedLoop(float target_vel, float dt) {
 
 float ControlModule::currentClosedLoop(float target_current, float dt, float electrical_angle, float Kp ,float Ki) {
  // 获取测量的 q 轴电流，并进行低通滤波
-    float measured_Iq = MotorDriver::computeIq(this->current.Ia, this->current.Ib, electrical_angle);
+    float measured_Iq = this->motorDriver.computeIq(this->current.Ia, this->current.Ib, electrical_angle);
     this->current.Iq_filtered = this->filter.alpha * measured_Iq 
                              + (1.0f - this->filter.alpha) * this->current.Iq_filtered;
     
@@ -140,7 +140,7 @@ float ControlModule::currentClosedLoop(float target_current, float dt, float ele
     return control_output;
 }
 float ControlModule::openLoopControl(float target_velocity) {
-    return MotorDriver::velocityOpenloop(target_velocity); // 调用开环速度函数
+    return this->motorDriver.velocityOpenloop(target_velocity); // 调用开环速度函数
 }
 
 
@@ -188,7 +188,7 @@ float ControlModule::PositionCurrentClosedLoop(float target_position, float dt) 
     target_current = applyCurrentLimit(target_current);
    
     // 电流环跟踪（此处继续使用原有电流闭环逻辑）
-    return currentClosedLoop(target_current, dt, MotorDriver::electricalAngle(this->sensor.mech_angle, Motor_pole_pairs), 
+    return currentClosedLoop(target_current, dt, this->motorDriver.electricalAngle(this->sensor.mech_angle, Motor_pole_pairs), 
                             this->pid.advanced.position_current.cur_Kp, 
                             this->pid.advanced.position_current.cur_Ki);
 }
@@ -215,7 +215,7 @@ float ControlModule::VelocityCurrentClosedLoop(float target_velocity, float dt) 
     target_current = applyCurrentLimit(target_current);
   
     // 电流环跟踪
-    return currentClosedLoop(target_current, dt, MotorDriver::electricalAngle(this->sensor.mech_angle, Motor_pole_pairs), 
+    return currentClosedLoop(target_current, dt, this->motorDriver.electricalAngle(this->sensor.mech_angle, Motor_pole_pairs), 
                             this->pid.advanced.velocity_current.cur_Kp, 
                             this->pid.advanced.velocity_current.cur_Ki);
 }
@@ -275,7 +275,7 @@ float ControlModule::PositionVelocityCurrentLoop(float target_position, float dt
     
     // --- 内嵌电流环 ---
     // 获取测量的 q 轴电流（用 AS5600 回传数据计算得到），并经过低通滤波
-    float measured_Iq = MotorDriver::computeIq(this->current.Ia, this->current.Ib, MotorDriver::electricalAngle(this->sensor.mech_angle, Motor_pole_pairs));
+    float measured_Iq = this->motorDriver.computeIq(this->current.Ia, this->current.Ib, this->motorDriver.electricalAngle(this->sensor.mech_angle, Motor_pole_pairs));
     this->current.Iq_filtered = this->filter.alpha * measured_Iq + (1.0f - this->filter.alpha) * this->current.Iq_filtered;
     
     // 电流环误差
@@ -299,15 +299,15 @@ float ControlModule::PositionVelocityCurrentLoop(float target_position, float dt
 }
 
 float ControlModule::getElectricalAngle() {
-    return MotorDriver::electricalAngle(this->sensor.mech_angle, Motor_pole_pairs);
+    return this->motorDriver.electricalAngle(this->sensor.mech_angle, Motor_pole_pairs);
 }
 
 float ControlModule::getNormalizedElectricalAngle() {
-    return MotorDriver::normalizeAngle(getElectricalAngle());
+    return this->motorDriver.normalizeAngle(getElectricalAngle());
 }
 
 void ControlModule::setPhaseVoltage(float Uq, float Ud, float angle_el) {
-    MotorDriver::setPhaseVoltage(Uq, Ud, angle_el);
+    this->motorDriver.setPhaseVoltage(Uq, Ud, angle_el);
 }
 
 // ====================== 工具函数 ======================
@@ -317,36 +317,47 @@ float _constrain(float amt, float low, float high) {
 
 // 修改后的数据获取方式
 void ControlModule::updateSensorData() {
-    encoder.Sensor_update();
-    current_sensor->getPhaseCurrents();
-    sensor.position = encoder.getAngle();
-    sensor.velocity = encoder.getVelocity();
-    sensor.mech_angle = encoder.getMechanicalAngle();
-    current.Ia = current_sensor->current_a;
-    current.Ib = current_sensor->current_b;
+    sensorManager.as5600.Sensor_update();
+    sensorManager.current_sense->getPhaseCurrents();
+    sensor.position = sensorManager.as5600.getAngle();
+    sensor.velocity = sensorManager.as5600.getVelocity();
+    sensor.mech_angle = sensorManager.as5600.getMechanicalAngle();
+    current.Ia = sensorManager.current_sense->current_a;
+    current.Ib = sensorManager.current_sense->current_b;
+}
+
+void ControlModule::initPID() {
+    this->pid.basic.position.integral = 0;
+    this->pid.basic.position.prev_error = 0;
+    this->pid.basic.velocity.integral = 0;
+    this->pid.basic.velocity.prev_error = 0;
+    this->pid.basic.current.integral = 0;
+    this->pid.basic.current.prev_error = 0;   
 }
 
 void ControlModule::calibrateZeroPoint() {
     xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
-    MotorDriver::setPhaseVoltage(this->limits.max_current, 0, _3PI_2);
+    this->motorDriver.setPhaseVoltage(this->limits.max_current, 0, _3PI_2);
     delay(200);
-    MotorDriver::sensor.update();
-    this->zero_electric_angle = MotorDriver::electricalAngle(
-        MotorDriver::sensor.getMechanicalAngle(),
+    this->motorDriver.sensor.update();
+    this->zero_electric_angle = this->motorDriver.electricalAngle(
+        this->motorDriver.sensor.getMechanicalAngle(),
         Motor_pole_pairs
     );
-    this->zero_electric_angle = MotorDriver::params.zero_electric_angle;
-    MotorDriver::setPhaseVoltage(0, 0, _3PI_2);
+    this->zero_electric_angle = this->motorDriver.params.zero_electric_angle;
+    this->motorDriver.setPhaseVoltage(0, 0, _3PI_2);
     xSemaphoreGiveRecursive(globalMutex);
 }
 
-void ControlModule::initSensors(TwoWire* encoder_wire, uint8_t encoder_addr, int current_pinA, int current_pinB, int current_pinC) {
-    // 初始化编码器
-    encoder.Sensor_init(encoder_wire, encoder_addr);
-    // 初始化电流传感器
-    current_sensor = new CurrSense(current_pinA, current_pinB, current_pinC);
-    current_sensor->init();
-    // 如需要，可在这里调用 current_sensor->calibrateOffsets() 等
+void ControlModule::hardwareInit(int pinA, int pinB, int pinC, 
+                                 int channelA, int channelB, int channelC) {
+    // 调用内嵌 MotorDriver 的硬件初始化接口
+    motorDriver.hardwareInit(pinA, pinB, pinC, channelA, channelB, channelC);
+}
+
+void ControlModule::initSensors(TwoWire* encoder_wire, uint8_t encoder_addr, 
+                                int current_pinA, int current_pinB, int current_pinC) {
+    sensorManager.init(current_pinA, current_pinB, current_pinC, encoder_wire, encoder_addr);
 }
 
 

@@ -8,6 +8,11 @@
 #include "ControlModule/ControlModule.h"
 
 
+// PWM输出引脚定义
+const int pwmA = 32;
+const int pwmB = 33;
+const int pwmC = 25;
+
 // 宏定义约束函数
 #define _constrain(amt, low, high) ((amt) < (low) ? (low) : ((amt) > (high) ? (high) : (amt)))
 
@@ -42,7 +47,9 @@ void setup() {
   digitalWrite(12, HIGH);
   delay(10);
 
-  motor.initSensors(); // 使用默认参数
+  Wire.begin(19,18);
+  motor.hardwareInit(pwmA, pwmB, pwmC, 0, 1, 2);
+  motor.initSensors(&Wire, 0x36, 39, 36); // 使用默认参数
 
   motor.calibrateZeroPoint();
 
@@ -102,20 +109,13 @@ void MotorControlTask(void *pvParameters) {
             continue;
         } else {
             // 等待阶段结束：初始化PID参数和目标位置，并切换到渐进阶段
-        xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
-          motor.target.position = motor.sensor.mech_angle;
-          User_control_params.target_pos = motor.sensor.mech_angle;
-          motor.pid.basic.position.integral = 0;
-          motor.pid.basic.position.prev_error = 0;
-          motor.pid.basic.velocity.integral = 0;
-          motor.pid.basic.velocity.prev_error = 0;
-          motor.pid.basic.current.integral = 0;
-          motor.pid.basic.current.prev_error = 0;
-        xSemaphoreGiveRecursive(globalMutex);
+            xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
+            User_control_params.target_pos = motor.sensor.mech_angle;
+            motor.target.position = motor.sensor.mech_angle;
+            motor.initPID();
+            xSemaphoreGiveRecursive(globalMutex);
 
-        
-
-        startup_state = RAMP_UP;
+            startup_state = RAMP_UP;  
             startup_start_time = xTaskGetTickCount(); // 重置计时用于渐进阶段
         }
       }

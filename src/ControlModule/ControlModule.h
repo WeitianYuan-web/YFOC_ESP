@@ -22,7 +22,7 @@ struct ControlParams {
 
 // 核心控制模块结构体
 struct ControlModule {
-    ControlModule(int mot_num = 0) : encoder(mot_num) {} // 构造函数
+    ControlModule(int mot_num = 0) : mot_num(mot_num) {} // 构造函数
 
     // 模式枚举
     enum Mode { 
@@ -35,19 +35,25 @@ struct ControlModule {
         CASCADE_POS_VEL_CUR = 7
     } current_mode = POSITION;
     
-    // 传感器成员
-    Sensor_AS5600 encoder;
-    CurrSense* current_sensor;
-    
-    // 新增校准时使用的零电角存储
+    int mot_num;
+    // 增加零电角成员
     float zero_electric_angle = 0.0f;
-
-    // 初始化传感器
+    // 使用 Driver 库中的 SensorManager 实例（每个 ControlModule 独立管理各自传感器）
+    SensorManager sensorManager;
+    
+    // 初始化传感器，调用 Driver 的初始化接口
     void initSensors(TwoWire* encoder_wire = &Wire, 
                      uint8_t encoder_addr = 0x36,
                      int current_pinA = 39,
                      int current_pinB = 36,
                      int current_pinC = -1);
+
+    // 增加 MotorDriver 实例
+    MotorDriver motorDriver;
+    
+    // 新增硬件初始化接口，传入PWM引脚和LEDc通道参数
+    void hardwareInit(int pinA, int pinB, int pinC, 
+                      int channelA, int channelB, int channelC);
     
     // 控制接口（全部改为非静态成员函数）
     bool set_control_mode(Mode mode, ControlParams params);
@@ -63,6 +69,7 @@ struct ControlModule {
     float getNormalizedElectricalAngle();
     void setPhaseVoltage(float Uq, float Ud, float angle_el);
     void updateSensorData();
+    void initPID();
 
     // 内部数据（传感器、电流、目标、PID、滤波、限流等）
     struct SensorData {

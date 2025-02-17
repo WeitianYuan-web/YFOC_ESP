@@ -1,25 +1,23 @@
 #include "Driver.h"
 #include "freertos/semphr.h"
+#include "Wire.h"
 
-MotorParameters MotorDriver::params;
-PhaseVoltage MotorDriver::phase;
 
-// 定义 SensorManager 的静态成员变量
-SemaphoreHandle_t SensorManager::sensorMutex = NULL;
-Sensor_AS5600 SensorManager::as5600(0);
-CurrSense* SensorManager::current_sense = nullptr;
-
-void MotorDriver::hardwareInit() {
-    SensorManager::init(39, 36);
-    pinMode(pwmA, OUTPUT);
-    pinMode(pwmB, OUTPUT);
-    pinMode(pwmC, OUTPUT);
-    ledcSetup(0, 20000, 10);
-    ledcSetup(1, 20000, 10);
-    ledcSetup(2, 20000, 10);
-    ledcAttachPin(pwmA, 0);
-    ledcAttachPin(pwmB, 1);
-    ledcAttachPin(pwmC, 2);
+void MotorDriver::hardwareInit(int pinA, int pinB, int pinC, 
+                               int channelA, int channelB, int channelC) {
+    // 保存通道信息（如果有需要后续使用，可增加成员变量保存）
+    
+    pinMode(pinA, OUTPUT);
+    pinMode(pinB, OUTPUT);
+    pinMode(pinC, OUTPUT);
+    
+    ledcSetup(channelA, 20000, 10);
+    ledcSetup(channelB, 20000, 10);
+    ledcSetup(channelC, 20000, 10);
+    
+    ledcAttachPin(pinA, channelA);
+    ledcAttachPin(pinB, channelB);
+    ledcAttachPin(pinC, channelC);
 }
 
 void MotorDriver::setPwm(float Ua, float Ub, float Uc) {
