@@ -95,8 +95,9 @@ public:
         motor.setPhaseVoltage(Uq, 0, motor.getElectricalAngle());
     }
     
-    // 更新控制模式，可支持多种模式
-    void update(ControlModule::Mode mode, float target_pos, float target_vel, float target_cur, float max_vel, float max_current) {
+    // 更新控制模式，可支持多种模式，多了一个斜坡因子参数，用于渐进输出（默认为1.0f，即全输出）
+    void update(ControlModule::Mode mode, float target_pos, float target_vel, float target_cur,
+                float max_vel, float max_current, float ramp_factor = 1.0f) {
         motor.updateSensorData();
         ControlParams params;
         params.target_pos = target_pos;
@@ -106,7 +107,8 @@ public:
         params.max_current = max_current;
         motor.set_control_mode(mode, params);
         float Uq = calculateOutput(mode, target_pos, target_vel, target_cur);
-        applyVoltage(Uq);
+        // 应用斜坡因子，实现从0到满输出的平滑过渡
+        applyVoltage(Uq * ramp_factor);
     }
     
     // 数据获取接口：获取电机传感器数据（位置、速度、机械角度）以及电流 Iq 数据

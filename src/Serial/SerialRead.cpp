@@ -7,6 +7,8 @@ SerialCommand SerialReader::readCommand() {
     SerialCommand cmd;
     // 默认没有可用指令
     cmd.commandType = SERIAL_COMMAND_NONE;
+    // 如果电机编号未解析，则设置默认为0
+    cmd.motor_id = 0; 
 
     // 轮询读取串口数据
     while (Serial.available() > 0) {
@@ -14,6 +16,17 @@ SerialCommand SerialReader::readCommand() {
         if (inChar == '\n') {  // 遇到换行符表示一条完整命令结束
             inputBuffer.trim();
             if (inputBuffer.length() > 0) {
+                // 先检查是否包含 motor_id 信息（例如 "id:0,"）
+                if (inputBuffer.startsWith("id:")) {
+                    int commaIndex = inputBuffer.indexOf(',');
+                    if (commaIndex != -1) {
+                        String idStr = inputBuffer.substring(3, commaIndex);
+                        cmd.motor_id = idStr.toInt();
+                        // 去掉 motor_id 部分，剩下的命令内容
+                        inputBuffer = inputBuffer.substring(commaIndex + 1);
+                    }
+                }
+                
                 // 模式切换指令，例如："mode:1"
                 if (inputBuffer.startsWith("mode:")) {
                     String modeStr = inputBuffer.substring(5);

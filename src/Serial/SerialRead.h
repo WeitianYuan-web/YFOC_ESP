@@ -13,9 +13,9 @@ enum SerialCommandType {
 // 定义返回的指令结构体
 struct SerialCommand {
     SerialCommandType commandType;
-    int mode;              // 当commandType == SERIAL_COMMAND_MODE时有效
-    // 当commandType == SERIAL_COMMAND_PARAM时的参数字段
-    float target_pos;
+    int motor_id;          // 新增字段：目标电机编号（例如 0 或 1）
+    int mode;              // 当 commandType == SERIAL_COMMAND_MODE 时有效
+    float target_pos;      // 当 commandType == SERIAL_COMMAND_PARAM 时有效
     float target_vel;
     float target_cur;
     float max_current;
