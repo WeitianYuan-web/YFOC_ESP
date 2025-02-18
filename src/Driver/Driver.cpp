@@ -6,7 +6,9 @@
 void MotorDriver::hardwareInit(int pinA, int pinB, int pinC, 
                                int channelA, int channelB, int channelC) {
     // 保存通道信息（如果有需要后续使用，可增加成员变量保存）
-    
+    ledcChannelA = channelA;
+    ledcChannelB = channelB;
+    ledcChannelC = channelC;
     pinMode(pinA, OUTPUT);
     pinMode(pinB, OUTPUT);
     pinMode(pinC, OUTPUT);
@@ -18,6 +20,7 @@ void MotorDriver::hardwareInit(int pinA, int pinB, int pinC,
     ledcAttachPin(pinA, channelA);
     ledcAttachPin(pinB, channelB);
     ledcAttachPin(pinC, channelC);
+
 }
 
 void MotorDriver::setPwm(float Ua, float Ub, float Uc) {
@@ -27,9 +30,9 @@ void MotorDriver::setPwm(float Ua, float Ub, float Uc) {
     phase.Ua = Ua;
     phase.Ub = Ub;
     phase.Uc = Uc;  
-    ledcWrite(0, phase.dc_a * 1023);
-    ledcWrite(1, phase.dc_b * 1023);
-    ledcWrite(2, phase.dc_c * 1023);
+    ledcWrite(ledcChannelA, phase.dc_a * 1023);
+    ledcWrite(ledcChannelB, phase.dc_b * 1023);
+    ledcWrite(ledcChannelC, phase.dc_c * 1023);
 }
 
 void MotorDriver::setPhaseVoltage(float Uq, float Ud, float angle_el) {
@@ -82,12 +85,19 @@ float MotorDriver::velocityOpenloop(float target_velocity) {
 }
 
 float MotorDriver::electricalAngle(float shaft_angle, int pole_pairs) {
-    return (shaft_angle * pole_pairs * params.direction);
+    // 计算原始电角
+    float raw_angle = shaft_angle * pole_pairs;
+    // 减去校准得到的零点偏置
+    raw_angle -= params.zero_electric_angle;
+    // 考虑电机方向
+    raw_angle *= params.direction;
+    // 归一化到 [0, 2π) 范围内
+    return normalizeAngle(raw_angle);
 }
 
 float MotorDriver::normalizeAngle(float angle) {
-    float a = fmod(angle, 2 * PI);
-    return a >= 0 ? a : (a + 2 * PI);
+    float a = fmod(angle, _2PI);
+    return a >= 0 ? a : (a + _2PI);
 } 
 
 // 计算 Iq 的函数，输入参数为 Ia、Ib 和电角度 electrical_angle，返回计算得到的 q 轴电流 Iq

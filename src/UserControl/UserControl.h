@@ -33,9 +33,10 @@ public:
         // 根据传入电机编号构造控制器对象
         motor = ControlModule(mot_num);
         // 初始化传感器：传入编码器接口、地址以及电流检测引脚
-        motor.initSensors(encoder_wire, encoder_addr, current_pinA, current_pinB, current_pinC);
         // 初始化硬件：传入 PWM 引脚和 LEDC 通道参数
         motor.hardwareInit(pinA, pinB, pinC, channelA, channelB, channelC);
+        motor.initSensors(encoder_wire, encoder_addr, current_pinA, current_pinB, current_pinC);
+        delay(100);
         // 校准零点
         motor.calibrateZeroPoint();
         // 初始化时间戳，供 dt 计算使用

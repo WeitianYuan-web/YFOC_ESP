@@ -4,8 +4,6 @@
 #include "Driver/Driver.h"
 
 
-// 互斥锁声明
-extern SemaphoreHandle_t globalMutex;
 
 // 辅助函数声明
 float _constrain(float amt, float low, float high);
@@ -315,16 +313,22 @@ float _constrain(float amt, float low, float high) {
     return (amt < low) ? low : ((amt > high) ? high : amt);
 }
 
-// 修改后的数据获取方式
+// 更新传感器数据，采用 SensorManager 内部的两阶段更新机制
 void ControlModule::updateSensorData() {
-    sensorManager.as5600.Sensor_update();
-    sensorManager.current_sense->getPhaseCurrents();
-    sensor.position = sensorManager.as5600.getAngle();
-    sensor.velocity = sensorManager.as5600.getVelocity();
-    sensor.mech_angle = sensorManager.as5600.getMechanicalAngle();
-    current.Ia = sensorManager.current_sense->current_a;
-    current.Ib = sensorManager.current_sense->current_b;
+    // 调用 SensorManager 的更新函数
+    this->sensorManager.update();
+    
+    // 复制缓存数据到 ControlModule 内部数据结构
+    this->sensor.position   = sensorManager.getAngle();
+    this->sensor.velocity   = sensorManager.getVelocity();
+    this->sensor.mech_angle = sensorManager.getMechanicalAngle();
+    
+    this->current.Ia = sensorManager.getCurrentA();
+    this->current.Ib = sensorManager.getCurrentB();
+    this->current.Ic = sensorManager.getCurrentC(); // 如果需要使用第三路电流数据
+    this->current.Iq = motorDriver.computeIq(this->current.Ia, this->current.Ib, this->motorDriver.electricalAngle(this->sensor.mech_angle, Motor_pole_pairs));
 }
+
 
 void ControlModule::initPID() {
     this->pid.basic.position.integral = 0;
@@ -336,17 +340,25 @@ void ControlModule::initPID() {
 }
 
 void ControlModule::calibrateZeroPoint() {
-    xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
+    // 1. 用最大电流对电机通道进行校准注入
     this->motorDriver.setPhaseVoltage(this->limits.max_current, 0, _3PI_2);
-    delay(200);
-    this->motorDriver.sensor.update();
-    this->zero_electric_angle = this->motorDriver.electricalAngle(
+    delay(200);  // 等待电机稳定
+
+    // 2. 更新传感器数据
+    this->sensorManager.update();
+
+    // 3. 使用传感器的机械角度计算电气角
+    float measuredElectricalAngle = this->motorDriver.electricalAngle(
         this->motorDriver.sensor.getMechanicalAngle(),
         Motor_pole_pairs
     );
-    this->zero_electric_angle = this->motorDriver.params.zero_electric_angle;
+
+    // 4. 保存校准得到的电气角
+    this->zero_electric_angle = measuredElectricalAngle;
+    this->motorDriver.params.zero_electric_angle = measuredElectricalAngle;
+
+    // 5. 校准完成后关闭电机相电压
     this->motorDriver.setPhaseVoltage(0, 0, _3PI_2);
-    xSemaphoreGiveRecursive(globalMutex);
 }
 
 void ControlModule::hardwareInit(int pinA, int pinB, int pinC, 
