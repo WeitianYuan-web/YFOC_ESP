@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
-#include "InlineCurrent.h"
-#include "AS5600.h"
+#include "Senser/InlineCurrent.h"
+#include "Senser/AS5600.h"
 #include <math.h>
 #include "freertos/semphr.h" // 加入 FreeRTOS 互斥量支持
 
