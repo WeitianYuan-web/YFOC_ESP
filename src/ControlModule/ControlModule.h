@@ -32,12 +32,14 @@ struct ControlModule {
         CURRENT = 4,
         CURRENT_POSITION = 5,
         CURRENT_VELOCITY = 6,
-        CASCADE_POS_VEL_CUR = 7
+        CASCADE_POS_VEL_CUR = 7,
+        SINGLE_POSITION = 8
     } current_mode = POSITION;
     
     int mot_num;
     // 增加零电角成员
     float zero_electric_angle = 0.0f;
+    float electrical_angle = 0.0f; // 电气角度（rad）
     // 使用 Driver 库中的 SensorManager 实例（每个 ControlModule 独立管理各自传感器）
     SensorManager sensorManager;
     
@@ -52,12 +54,12 @@ struct ControlModule {
     MotorDriver motorDriver;
     
     // 新增硬件初始化接口，传入PWM引脚和LEDc通道参数
-    void hardwareInit(int pinA, int pinB, int pinC, 
+    void hardwareInit(int pinA, int pinB, int pinC, int direction,
                       int channelA, int channelB, int channelC);
     
     // 控制接口（全部改为非静态成员函数）
-    bool set_control_mode(Mode mode, ControlParams params);
     float positionClosedLoop(float target_pos, float dt);
+    float positionClosedLoop_single(float target_pos, float dt);
     float velocityClosedLoop(float target_vel, float dt);
     float openLoopControl(float target_velocity);
     float currentClosedLoop(float target_current, float dt, float electrical_angle, float Kp, float Ki);
@@ -103,7 +105,7 @@ struct ControlModule {
                 float prev_error = 0;
             } position;
             struct {
-                float Kp = 0.65f;
+                float Kp = 0.2f;
                 float Ki = 0.1f;
                 float Kd = 0.0005f;
                 float integral = 0;
@@ -173,4 +175,5 @@ private:
     // 将使用 this 的辅助函数声明为非静态成员函数
     float applyCurrentLimit(float target);
     bool isCurrentValid(float current);
+    
 };

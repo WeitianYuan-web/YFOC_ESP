@@ -3,7 +3,7 @@
 #include "Wire.h"
 
 
-void MotorDriver::hardwareInit(int pinA, int pinB, int pinC, 
+void MotorDriver::hardwareInit(int pinA, int pinB, int pinC, int direction,
                                int channelA, int channelB, int channelC) {
     // 保存通道信息（如果有需要后续使用，可增加成员变量保存）
     ledcChannelA = channelA;
@@ -21,6 +21,7 @@ void MotorDriver::hardwareInit(int pinA, int pinB, int pinC,
     ledcAttachPin(pinB, channelB);
     ledcAttachPin(pinC, channelC);
 
+    params.direction = direction;
 }
 
 void MotorDriver::setPwm(float Ua, float Ub, float Uc) {
@@ -85,19 +86,12 @@ float MotorDriver::velocityOpenloop(float target_velocity) {
 }
 
 float MotorDriver::electricalAngle(float shaft_angle, int pole_pairs) {
-    // 计算原始电角
-    float raw_angle = shaft_angle * pole_pairs;
-    // 减去校准得到的零点偏置
-    raw_angle -= params.zero_electric_angle;
-    // 考虑电机方向
-    raw_angle *= params.direction;
-    // 归一化到 [0, 2π) 范围内
-    return normalizeAngle(raw_angle);
+    return shaft_angle * pole_pairs * params.direction;
 }
 
 float MotorDriver::normalizeAngle(float angle) {
-    float a = fmod(angle, _2PI);
-    return a >= 0 ? a : (a + _2PI);
+    float a = fmod(angle, 2 * PI );
+    return a >= 0 ? a : (a + 2 * PI);
 } 
 
 // 计算 Iq 的函数，输入参数为 Ia、Ib 和电角度 electrical_angle，返回计算得到的 q 轴电流 Iq

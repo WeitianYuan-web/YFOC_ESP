@@ -14,7 +14,7 @@
 #define Motor_KV 10.0f              //KV值
 #define _2PI 6.28318530718f
 #define _3PI_2 4.71238898038f
-#define DIRECTION_FORWARD -1
+#define DIRECTION_FORWARD 1
 
 // 电机参数结构体
 struct MotorParameters {
@@ -47,11 +47,10 @@ struct PhaseVoltage {
 class SensorManager {
 public:
     SensorManager() : as5600(0), current_sense(nullptr) {
-        sensorMutex = xSemaphoreCreateRecursiveMutex();
     }
     
     // 初始化传感器（包括I2C初始化、编码器和电流检测传感器）
-    void init(int pinA, int pinB, int pinC = NOT_SET,
+    void SensorManager_init(int pinA, int pinB, int pinC = NOT_SET,
               TwoWire* encoder_wire = &Wire,
               uint8_t encoder_addr = 0x36,
               int i2cSda = 21,
@@ -71,7 +70,6 @@ public:
         current_sense->getPhaseCurrents();
         
         // 第二阶段：加锁后快速将数据复制到内部缓存中
-        xSemaphoreTakeRecursive(sensorMutex, portMAX_DELAY);
         sensorCache.position = as5600.getAngle();
         sensorCache.velocity = as5600.getVelocity();
         sensorCache.mech_angle = as5600.getMechanicalAngle();
@@ -79,55 +77,42 @@ public:
         currentCache.current_a = current_sense->current_a;
         currentCache.current_b = current_sense->current_b;
         currentCache.current_c = current_sense->current_c;
-        xSemaphoreGiveRecursive(sensorMutex);
     }
     
     // 以下接口在短临界区内快速获取已缓存的数据
     float getAngle() {
         float angle;
-        xSemaphoreTakeRecursive(sensorMutex, portMAX_DELAY);
         angle = sensorCache.position;
-        xSemaphoreGiveRecursive(sensorMutex);
         return angle;
     }
     
     float getVelocity() {
         float vel;
-        xSemaphoreTakeRecursive(sensorMutex, portMAX_DELAY);
         vel = sensorCache.velocity;
-        xSemaphoreGiveRecursive(sensorMutex);
         return vel;
     }
     
     float getMechanicalAngle() {
         float angle;
-        xSemaphoreTakeRecursive(sensorMutex, portMAX_DELAY);
         angle = sensorCache.mech_angle;
-        xSemaphoreGiveRecursive(sensorMutex);
         return angle;
     }
     
     float getCurrentA() {
         float curr;
-        xSemaphoreTakeRecursive(sensorMutex, portMAX_DELAY);
         curr = currentCache.current_a;
-        xSemaphoreGiveRecursive(sensorMutex);
         return curr;
     }
     
     float getCurrentB() {
         float curr;
-        xSemaphoreTakeRecursive(sensorMutex, portMAX_DELAY);
         curr = currentCache.current_b;
-        xSemaphoreGiveRecursive(sensorMutex);
         return curr;
     }
     
     float getCurrentC() {
         float curr;
-        xSemaphoreTakeRecursive(sensorMutex, portMAX_DELAY);
         curr = currentCache.current_c;
-        xSemaphoreGiveRecursive(sensorMutex);
         return curr;
     }
     
@@ -156,7 +141,7 @@ class MotorDriver {
 public:
     MotorDriver() : ledcChannelA(0), ledcChannelB(0), ledcChannelC(0) {}
     // 将接口函数改为普通成员函数
-    void hardwareInit(int pinA, int pinB, int pinC, 
+    void hardwareInit(int pinA, int pinB, int pinC, int direction,
                       int channelA, int channelB, int channelC);
     void setPwm(float Ua, float Ub, float Uc);
     void setPhaseVoltage(float Uq, float Ud, float angle_el);

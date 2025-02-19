@@ -8,7 +8,7 @@
 
 // -------------- 宏定义 --------------
 // 定义 USE_DUAL_MOTOR 为1启用双电机模式，设置为0则仅使用一个电机
-#define USE_DUAL_MOTOR 1
+#define USE_DUAL_MOTOR 0
 
 // -------------- 全局变量 --------------
 SemaphoreHandle_t globalMutex = NULL;
@@ -60,7 +60,7 @@ void setup() {
 
   // 初始化参数：以电机0当前读取的位置为基准（两个电机可共用或分别初始化）
   xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
-    MotorData data0 = userControl0.getSensorData();
+    MotorData data0 = userControl0.update_getSensorData();
     User_control_params0.target_pos = data0.position;
     User_control_params0.target_vel = 0;
     User_control_params0.target_cur = 0;
@@ -78,10 +78,10 @@ void setup() {
   Wire.begin(19, 18, 800000);
 
   // 单电机模式：只初始化 motor0
-  userControl0.begin(0, &Wire, 0x36, 39, 36, -1, 32, 33, 25, 0, 1, 2);
+  userControl0.begin(0, &Wire, 0x36, 39, 36, -1, 32, 33, 25, 1, 0, 1, 2);
   
   xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
-    MotorData data0 = userControl0.getSensorData();
+    MotorData data0 = userControl0.update_getSensorData();
     User_control_params0.target_pos = data0.position;
     User_control_params0.target_vel = 0;
     User_control_params0.target_cur = 0;
@@ -117,25 +117,26 @@ void ControlTask(void *pvParameters) {
 
   for (;;) {
     TickType_t now = xTaskGetTickCount();
+    uint32_t dt = userControl0.updateDt();
     switch(startup_state) {
       case WAIT_STABLE:
         if ((now - state_start_time) < wait_duration) {
           // 启动等待阶段：使用OPEN_LOOP输出0电压来稳定
 #if USE_DUAL_MOTOR
-          userControl0.update(ControlModule::OPEN_LOOP, 0, 0, 0, 0, 0);
-          userControl1.update(ControlModule::OPEN_LOOP, 0, 0, 0, 0, 0);
+          userControl0.update(ControlModule::OPEN_LOOP, 0, 0, 0, 0, 0, dt);
+          userControl1.update(ControlModule::OPEN_LOOP, 0, 0, 0, 0, 0, dt);
 #else
-          userControl0.update(ControlModule::OPEN_LOOP, 0, 0, 0, 0, 0);
+          userControl0.update(ControlModule::OPEN_LOOP, 0, 0, 0, 0, 0, dt);
 #endif
         } else {
 #if USE_DUAL_MOTOR
-          MotorData data = userControl0.getSensorData();
+          MotorData data = userControl0.update_getSensorData();
           xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
             User_control_params0.target_pos = data.position;
             User_control_params1.target_pos = data.position;
           xSemaphoreGiveRecursive(globalMutex);
 #else
-          MotorData data = userControl0.getSensorData();
+          MotorData data = userControl0.update_getSensorData();
           xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
             User_control_params0.target_pos = data.position;
           xSemaphoreGiveRecursive(globalMutex);
@@ -183,16 +184,16 @@ void ControlTask(void *pvParameters) {
             ControlParams params1 = User_control_params1;
           xSemaphoreGiveRecursive(globalMutex);
           userControl0.update(mode0, params0.target_pos, params0.target_vel, params0.target_cur,
-                             params0.pos_vel_limit, params0.max_current);
+                             params0.pos_vel_limit, params0.max_current, dt);
           userControl1.update(mode1, params1.target_pos, params1.target_vel, params1.target_cur,
-                             params1.pos_vel_limit, params1.max_current);
+                             params1.pos_vel_limit, params1.max_current, dt);
 #else
           xSemaphoreTakeRecursive(globalMutex, portMAX_DELAY);
             ControlModule::Mode mode = current_mode0;
             ControlParams params = User_control_params0;
           xSemaphoreGiveRecursive(globalMutex);
           userControl0.update(mode, params.target_pos, params.target_vel, params.target_cur,
-                              params.pos_vel_limit, params.max_current);
+                              params.pos_vel_limit, params.max_current, dt);
 #endif
         break;
     }
@@ -212,7 +213,7 @@ void DataPrintTask(void *pvParameters) {
     float dataArray[20];
 
     // 电机0数据
-    MotorData data0 = userControl0.getSensorData();
+    MotorData data0 = userControl0.update_getSensorData();
     dataArray[0]  = 0;  // 电机编号
     dataArray[1]  = data0.current_Iq;
     dataArray[2]  = data0.velocity;
@@ -227,7 +228,7 @@ void DataPrintTask(void *pvParameters) {
     xSemaphoreGiveRecursive(globalMutex);
 
     // 电机1数据
-    MotorData data1 = userControl1.getSensorData();
+    MotorData data1 = userControl1.update_getSensorData();
     dataArray[10] = 1;  // 电机编号
     dataArray[11] = data1.current_Iq;
     dataArray[12] = data1.velocity;
@@ -248,7 +249,7 @@ void DataPrintTask(void *pvParameters) {
   // 单电机模式：只采集电机0的数据，数组包含10个数据
   for (;;) {
     float dataArray[10];
-    MotorData data0 = userControl0.getSensorData();
+    MotorData data0 = userControl0.update_getSensorData();
     dataArray[0]  = 0;  // 电机编号（单电机时默认为0）
     dataArray[1]  = data0.current_Iq;
     dataArray[2]  = data0.velocity;
